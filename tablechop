@@ -13,6 +13,7 @@ import sys
 from datetime import datetime
 from dateutil import parser as dtparser
 
+args = None
 now = None
 
 def days_ago(tstamp):
@@ -23,6 +24,77 @@ def days_ago(tstamp):
     backup = datetime.strptime(tstamp, '%Y-%m-%dT%H:%M:%S.%fZ')
     delta = now - backup
     return delta.days
+
+def process_listdir(bucket, item):
+    listdir_dict = {}
+    if (days_ago(item.last_modified)> args.age):
+        log.debug("Item: %s, has age %s, removing" % (item.name, days_ago(item.last_modified)))
+        bucket.delete_key(item)
+    else:
+        ky = bucket.get_key(item)
+        jdict = json.loads(ky.get_contents_as_string())
+        if len(jdict.values()) != 1:
+            raise SystemError('-listdir.json file should have '
+                'a single key/value pair!')
+
+        dirname = jdict.keys()[0]
+        # fullpaths here since some files are in subdirectories
+        fullpaths = [os.path.join(dirname, x) for x in jdict.values()[0]]
+        for i in fullpaths:
+            if listdir_dict.get(i) == None:
+                listdir_dict[i] = 1
+            else:
+                listdir_dict[i] += 1
+    return listdir_dict
+
+def process_file_key(item):
+    file_dict = {}
+    if (days_ago(item.last_modified)> args.age):
+        key = item.name.split(':')[1]
+        file_dict[key] = item
+    return file_dict
+
+def inspect_list(bucket, item_list):
+    item_count = 0
+    listdir_delete_count = 0
+    subfolders = []
+    listdir_dict = {}
+    file_dict = {}
+
+    log.info("Processing: %s" % item_list.prefix)
+    for item in item_list:
+        item_count +=1
+
+        if (item.name.endswith('/')):
+            subfolders.append(item)
+        elif (item.name.endswith('-listdir.json')):
+            res = process_listdir(bucket, item)
+            if len(res) == 0:
+                listdir_delete_count +=1
+            listdir_dict.update(res)
+        else:
+            file_dict.update(process_file_key(item))
+
+        if (item_count % 5000) == 0:
+            log.debug("Analyzed items progress: %s" % item_count)
+            log.debug("\tReferenced listdir.json items: %s" % len(listdir_dict))
+            log.debug("\tReferenced content file items: %s" % len(file_dict))
+
+    log.info("Total items in fodler: %s" % item_count)
+    log.info("Cleaning files:")
+    content_deleted = 0
+    for content in file_dict:
+        keep_file = (args.keep_existing & os.path.isfile(content))
+
+        if (listdir_dict.get(content) == None) and (not keep_file):
+            log.debug('Deleting old file: %s with age: %s' % (content,days_ago(file_dict[content].last_modified))
+            bucket.delete_key(file_dict[content])
+            content_deleted += 1
+    log.info('Removed %s entires', content_deleted)
+    log.info("Process %s subfolders:" % len(subfolders))
+    for sub in subfolders:
+            inspect_list(bucket, bucket.list(prefix=sub.name, delimiter='/'))
+    log.info("Leaving %s" % item_list.prefix)
 
 def clean_backups(args, log):
 
@@ -41,90 +113,19 @@ def clean_backups(args, log):
         log.error('Problem initializing S3 connection: %s', e)
         sys.exit(1)
 
-    try:
-        key_list = bucket.list("%s:%s" % (args.name, args.path))
-    except boto.exception.BotoServerError, e:
-        log.error('Problem getting keys from S3 bucket: %s', e)
-        sys.exit(1)
-
     log.info("Connected to S3, getting keys ...")
 
-    json_keys = []
-    to_delete = set() # we'll remove from this list
-    for k in sorted(
-        key_list,
-        key=lambda k: dtparser.parse(k.last_modified),
-        reverse=True, # most recent first
-    ):
-        to_delete.add(k.name)
-        if k.name.endswith('-listdir.json'):
-            json_keys.append(k)
+    lcs_prefix = "%s:%s" % (args.name, args.path)
+    log.debug("Using prefix: %s", lcs_prefix)
 
-    log.info("%s keys total", len(to_delete))
-    log.debug("%s json listdir keys", len(json_keys))
-
-    is_old = False	# used in testing for existence of file on server
-    for jkey in json_keys:
-        log.debug("key dated : %s (%s)", jkey.last_modified,
-                  jkey.name.split('/')[-1])
-        if days_ago(jkey.last_modified) > args.age:
-            # We've gone back past our cutoff
-            log.info("Reached cutoff at timestamp %s", jkey.last_modified)
-            is_old = True
-            if not args.keep_existing:
-                break
-        ky = bucket.get_key(jkey)
-        jdict = json.loads(ky.get_contents_as_string())
-        if len(jdict.values()) != 1:
-            raise SystemError('-listdir.json file should have '
-                'a single key/value pair!')
-        dirname = jdict.keys()[0]
-        # fullpaths here since some files are in subdirectories
-        fullpaths = [os.path.join(dirname, x) for x in jdict.values()[0]]
-        keep_jkey = False # assume we are deleting the jkey
-        for x in fullpaths:
-	    keep_file = True # assume we are keeping the file - this is the default behavior
-	    # if we are checking if we should keep existing files
-	    if args.keep_existing and is_old and not os.path.isfile(x):
-	        # don't keep the file if it is old and it does not exist
-	        keep_file = False
-
-            keep_jkey = keep_jkey or keep_file  # keep the jkey if we are keeping any of the files
-	    key_to_keep = '%s:%s' % (args.name, x)
-	    # if we are keeping the file
-	    if keep_file and key_to_keep in to_delete:
-	        to_delete.remove(key_to_keep)
-
-        if keep_jkey and jkey.name in to_delete:
-            to_delete.remove(jkey.name)
-
-    to_del_len = len(to_delete)
-    if args.list_deletes:
-        # chunk into lines with 10 files each to avoid either too many lines
-        # or one gigantic line
-        to_del_list = list(to_delete)
-        for delchunk in [','.join(to_del_list[i:i+10]) for \
-                         i in xrange(0, to_del_len, 10)]:
-            log.info("Files to delete: %s" % delchunk)
-    if args.debug:
-        log.debug("%s non-keeper keys to delete", to_del_len)
-        ddates = list(set([x.last_modified[:10] for x in key_list \
-                           if x.name in to_delete]))
-        ddates.sort()
-        log.debug("deletion dates : %s", ddates)
-        log.debug("Test mode, nothing deleted")
-        return
-
-    log.info("Deleting %s keys", to_del_len)
-
-    try:
-        bucket.delete_keys(to_delete) # !!
-    except Exception as e:
-        log.error('S3 delete ERR, will try again later [%s]', e)
+    #According to the documentations keys are sent in alphabetical order
+    # Beware that <filename>-10-<...> comes before than <filename>-9-<...>
+    inspect_list(bucket, bucket.list(prefix=lcs_prefix, delimiter='/'))
 
     log.info("Keys deleted")
 
 def main(log):
+    global args
     parser = argparse.ArgumentParser(
         description='Clean SSTables from S3. Scroll backwards through '
         '-listdir.json keys in chronological order collecting a "keeper" '
