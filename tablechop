@@ -87,7 +87,7 @@ def inspect_list(bucket, item_list):
         keep_file = (args.keep_existing & os.path.isfile(content))
 
         if (listdir_dict.get(content) == None) and (not keep_file):
-            log.debug('Deleting old file: %s with age: %s' % (content,days_ago(file_dict[content].last_modified))
+            log.debug('Deleting old file: %s with age: %s' % (content,days_ago(file_dict[content].last_modified)))
             bucket.delete_key(file_dict[content])
             content_deleted += 1
     log.info('Removed %s entires', content_deleted)
