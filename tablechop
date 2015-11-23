@@ -186,14 +186,20 @@ def main(log):
 
 if __name__ == '__main__':
 
-    log = logging.getLogger('tablechop')
-    stderr = logging.StreamHandler()
-    stderr.setFormatter(logging.Formatter(
-        '%(name)s [%(asctime)s] %(levelname)s %(message)s'))
-    log.addHandler(stderr)
-    if os.environ.get('TDEBUG', False):
-        log.setLevel(logging.DEBUG)
+    default_log = logging.getLogger('tablechop')
+    if os.environ.get('TABLESNAP_SYSLOG', True):
+        facility = logging.handlers.SysLogHandler.LOG_DAEMON
+        syslog = logging.handlers.SysLogHandler(address='/dev/log', facility=facility)
+        syslog.setFormatter(logging.Formatter('tablechop: %(message)s'))
+        default_log.addHandler(syslog)
     else:
-        log.setLevel(logging.INFO)
+        stderr = logging.StreamHandler()
+        stderr.setFormatter(logging.Formatter('%(asctime)s %(levelname)s %(message)s'))
+        default_log.addHandler(stderr)
 
-    main(log)
+    if os.environ.get('TDEBUG', False):
+        default_log.setLevel(logging.DEBUG)
+    else:
+        default_log.setLevel(logging.INFO)
+
+    main(default_log)
