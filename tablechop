@@ -93,7 +93,7 @@ def inspect_list(bucket, item_list, log):
     log.info('Removed %s entires', content_deleted)
     log.info("Process %s subfolders:" % len(subfolders))
     for sub in subfolders:
-            inspect_list(bucket, bucket.list(prefix=sub.name, delimiter='/'))
+            inspect_list(bucket, bucket.list(prefix=sub.name, delimiter='/'), log)
     log.info("Leaving %s" % item_list.prefix)
 
 def clean_backups(args, log):
