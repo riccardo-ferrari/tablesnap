@@ -25,7 +25,7 @@ def days_ago(tstamp):
     delta = now - backup
     return delta.days
 
-def process_listdir(bucket, item):
+def process_listdir(bucket, item, log):
     listdir_dict = {}
     if (days_ago(item.last_modified)> args.age):
         log.debug("Item: %s, has age %s, removing" % (item.name, days_ago(item.last_modified)))
@@ -54,7 +54,7 @@ def process_file_key(item):
         file_dict[key] = item
     return file_dict
 
-def inspect_list(bucket, item_list):
+def inspect_list(bucket, item_list, log):
     item_count = 0
     listdir_delete_count = 0
     subfolders = []
@@ -68,7 +68,7 @@ def inspect_list(bucket, item_list):
         if (item.name.endswith('/')):
             subfolders.append(item)
         elif (item.name.endswith('-listdir.json')):
-            res = process_listdir(bucket, item)
+            res = process_listdir(bucket, item,log)
             if len(res) == 0:
                 listdir_delete_count +=1
             listdir_dict.update(res)
@@ -120,7 +120,7 @@ def clean_backups(args, log):
 
     #According to the documentations keys are sent in alphabetical order
     # Beware that <filename>-10-<...> comes before than <filename>-9-<...>
-    inspect_list(bucket, bucket.list(prefix=lcs_prefix, delimiter='/'))
+    inspect_list(bucket, bucket.list(prefix=lcs_prefix, delimiter='/'), log)
 
     log.info("Keys deleted")
 
